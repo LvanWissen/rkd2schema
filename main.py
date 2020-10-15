@@ -7,6 +7,7 @@ pip install git+https://github.com/LvanWissen/RDFAlchemy.git
 
 import os
 import json
+import calendar
 from rdflib.term import BNode
 
 import requests
@@ -21,10 +22,12 @@ nsThesaurus = Namespace(
     "https://data.create.humanities.uva.nl/id/rkdimages/thesaurus/")
 
 schema = Namespace("http://schema.org/")
+dc = Namespace("http://purl.org/dc/elements/1.1/")
 sem = Namespace("http://semanticweb.cs.vu.nl/2009/11/sem/")
 bio = Namespace("http://purl.org/vocab/bio/0.1/")
 foaf = Namespace("http://xmlns.com/foaf/0.1/")
 void = Namespace("http://rdfs.org/ns/void#")
+nsIconClass = Namespace('http://iconclass.org/')
 
 
 class Entity(rdfSubject):
@@ -93,6 +96,8 @@ class VisualArtwork(CreativeWork):
     depth = rdfSingle(schema.depth)
     image = rdfMultiple(schema.image)
 
+    subject = rdfMultiple(dc.subject)
+
 
 class QuantitativeValue(Entity):
     rdf_type = schema.QuantitativeValue
@@ -132,6 +137,8 @@ class Person(Entity):
 
     parent = rdfMultiple(schema.parent)
     children = rdfMultiple(schema.children)
+
+    gender = rdfSingle(schema.gender)
 
 
 class Event(Entity):
@@ -190,7 +197,7 @@ def parseData(d, thesaurusDict=dict()):
         f"https://images.rkd.nl/rkd/thumb/650x650/{img}.jpg"
         for img in d['picturae_images']
     ]
-    dateModified = Literal(d['modification'], datatype=XSD.datetime)
+    # dateModified = Literal(d['modification'], datatype=XSD.datetime)
     names_nl = d['benaming_kunstwerk']
     name_en = d['titel_engels']
     alternateName = d['andere_benaming']
@@ -248,22 +255,28 @@ def parseData(d, thesaurusDict=dict()):
     width = QuantitativeValue(
         None,
         unitCode='MTR',
-        value=Literal(float(d['breedte']) /
-                      100, datatype=XSD.float)) if d['breedte'] else None
+        value=Literal(float(d['breedte']) / 100, datatype=XSD.float
+                      )) if d['breedte'] and d['breedte'] != "?" else None
     height = QuantitativeValue(
         None,
         unitCode='MTR',
         value=Literal(float(d['hoogte'].replace(',', '.')) / 100,
-                      datatype=XSD.float)) if d['hoogte'] else None
-    depth = QuantitativeValue(
-        None,
-        unitCode='MTR',
-        value=Literal(float(d['diepte']) /
-                      100, datatype=XSD.float)) if d['diepte'] else None
+                      datatype=XSD.float
+                      )) if d['hoogte'] and d['hoogte'] != "?" else None
+    depth = QuantitativeValue(None,
+                              unitCode='MTR',
+                              value=Literal(float(d['diepte']) / 100,
+                                            datatype=XSD.float)
+                              ) if d['diepte'] and d['diepte'] != "?" else None
 
     externalURIs = []
     for u in d['urls']:
         externalURIs.append(URIRef(u['URL']))
+
+    if d.get('iconclass_code'):
+        iconclass = nsIconClass.term(d['iconclass_code'])
+    else:
+        iconclass = None
 
     related = []
     for r in d['onderdeel_van']:
@@ -299,6 +312,8 @@ def parseData(d, thesaurusDict=dict()):
         personData = {
             'identifier': p['persoonsnummer'],
             'name': p['naam_display'],
+            'disambiguatingDescription': p.get('functie'),
+            'gender': p.get('geslacht'),
             'birthPlace': p.get('geboorteplaats'),
             'birthPlaceIdentifier': p.get('geboorteplaats_lref'),
             'birthDateBegin': p.get('geboortedatum_begin'),
@@ -388,9 +403,12 @@ def parseData(d, thesaurusDict=dict()):
         height=height,
         depth=depth,
         image=[URIRef(i) for i in images],
-        dateModified=dateModified,
+        # dateModified=dateModified,
         publication=publication,
         sameAs=externalURIs)
+
+    if iconclass:
+        visualArtwork.subject = [iconclass]
 
     partOfs = []
     for r in related:
@@ -404,6 +422,19 @@ def parseData(d, thesaurusDict=dict()):
 
 
 def parseDate(begin, end=None):
+
+    if begin and len(begin) == 4:
+        begin += "-01-01"
+    elif begin and len(begin) == 7:
+        begin += "-01"
+
+    if end and len(end) == 4:
+        end += "-12-31"
+    elif end and len(end) == 7:
+        # last of the month
+        year, month = end.split('-')
+        _, lastday = calendar.monthrange(int(year), int(month))
+        end += f"-{lastday}"
 
     if begin and begin == end:
         timeStamp = Literal(begin, datatype=XSD.date)
@@ -603,7 +634,17 @@ def parseThesaurusURL(identifier, url):
 
 def getPerson(p):
 
-    person = Person(nsPerson.term(str(p['identifier'])), name=[p['name']])
+    person = Person(nsPerson.term(str(p['identifier'])),
+                    name=[p['name']],
+                    disambiguatingDescription=[
+                        Literal(p['disambiguatingDescription'], lang='nl')
+                    ] if p['disambiguatingDescription'] else [])
+
+    if p['gender']:
+        if p['gender'] == 'm':
+            person.gender = schema.Male
+        elif p['gender'] == 'f':
+            person.gender = schema.Female
 
     events = []
 
@@ -707,6 +748,7 @@ def main(identifiers, URL="https://api.rkd.nl/api/record/portraits/"):
     ds.bind('void', void)
     ds.bind('skos', SKOS)
     ds.bind('owl', OWL)
+    ds.bind('dc', dc)
 
     ## First the images
 
@@ -740,4 +782,4 @@ def main(identifiers, URL="https://api.rkd.nl/api/record/portraits/"):
 
 
 if __name__ == "__main__":
-    main([3063, 147735, 125660])
+    main([197253, 3063, 147735, 125660])
