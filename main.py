@@ -9,6 +9,7 @@ import os
 import json
 import calendar
 from rdflib.term import BNode
+import urllib.parse
 
 import requests
 from bs4 import BeautifulSoup
@@ -16,10 +17,9 @@ from bs4 import BeautifulSoup
 from rdflib import Dataset, Namespace, URIRef, Literal, OWL, RDFS, XSD, SKOS
 from rdfalchemy import rdfSubject, rdfMultiple, rdfSingle
 
-nsPerson = Namespace(
-    "https://data.create.humanities.uva.nl/id/rkdimages/person/")
+nsPerson = Namespace("https://data.create.humanities.uva.nl/id/rkd/persons/")
 nsThesaurus = Namespace(
-    "https://data.create.humanities.uva.nl/id/rkdimages/thesaurus/")
+    "https://data.create.humanities.uva.nl/id/rkd/thesaurus/")
 
 schema = Namespace("http://schema.org/")
 dc = Namespace("http://purl.org/dc/elements/1.1/")
@@ -62,6 +62,7 @@ class Role(Entity):
 
     name = rdfSingle(schema.name)
     isPartOf = rdfSingle(schema.isPartOf)
+    isRelatedTo = rdfSingle(schema.isRelatedTo)
 
 
 class CreativeWork(Entity):
@@ -75,10 +76,11 @@ class CreativeWork(Entity):
     mainEntity = rdfSingle(schema.mainEntity)
 
     isPartOf = rdfMultiple(schema.isPartOf)
+    isRelatedTo = rdfMultiple(schema.isRelatedTo)
 
 
 class VisualArtwork(CreativeWork):
-    rdf_type = schema.VisualArtwork
+    rdf_type = schema.VisualArtwork, schema.Product
 
     artist = rdfMultiple(schema.artist)
 
@@ -181,11 +183,51 @@ class Concept(Entity):
     narrower = rdfMultiple(SKOS.narrower)
 
 
-def parseURL(url, params={'format': 'json'}, thesaurusDict=dict()):
+def parseURL(url,
+             params={'format': 'json'},
+             thesaurusDict=dict(),
+             URL="https://api.rkd.nl/api/record/portraits/"):
 
-    r = requests.get(url, params=params).json()['response']['docs'][0]
+    r = requests.get(url, params=params).json()
 
-    parseData(r, thesaurusDict=thesaurusDict)
+    if r['response']['numFound'] >= 1:
+        nTotal = r['response']['numFound']
+        start = 0
+
+        with open('imagecache.json') as infile:
+            imageCache = json.load(infile)
+
+        while start < nTotal:
+            # First retrieve the identifier through a search (one at the time)
+            print(f"Fetching {start+1}/{nTotal}")
+            params = {'format': 'json', 'start': start}
+            r = requests.get(url, params=params).json()
+            doc = r['response']['docs'][0]
+
+            # Then, retrieve the individual image
+            # this gives other keys in the json...
+            identifier = str(doc['priref'])
+
+            doc = imageCache.get(identifier)
+
+            if doc is None:
+                r = requests.get(URL + identifier, params={
+                    'format': 'json'
+                }).json()
+                doc = r['response']['docs'][0]
+                imageCache[identifier] = doc
+
+            parseData(doc, thesaurusDict=thesaurusDict)
+            start += 1
+
+            # save every 250 requests
+            if start % 250 == 0 or start == nTotal - 1:
+                with open('imagecache.json', 'w') as outfile:
+                    json.dump(imageCache, outfile)
+
+    else:
+        doc = r['response']['docs'][0]
+        parseData(doc, thesaurusDict=thesaurusDict)
 
     return thesaurusDict
 
@@ -193,13 +235,23 @@ def parseURL(url, params={'format': 'json'}, thesaurusDict=dict()):
 def parseData(d, thesaurusDict=dict()):
 
     identifier = d['priref']
-    images = [
-        f"https://images.rkd.nl/rkd/thumb/650x650/{img}.jpg"
-        for img in d['picturae_images']
-    ]
+
+    if d.get('picturae_images'):
+        images = [
+            f"https://images.rkd.nl/rkd/thumb/650x650/{img}.jpg"
+            for img in d['picturae_images']
+        ]
+    elif d.get('afbeeldingsnummer_rkd_picturae_mapping'):
+        images = [
+            f"https://images.rkd.nl/rkd/thumb/650x650/{img}.jpg"
+            for img in d['afbeeldingsnummer_rkd_picturae_mapping'].values()
+        ]
+    else:
+        images = []
+
     # dateModified = Literal(d['modification'], datatype=XSD.datetime)
     names_nl = d['benaming_kunstwerk']
-    name_en = d['titel_engels']
+    names_en = [d['titel_engels']] if d['titel_engels'] else []
     alternateName = d['andere_benaming']
 
     disambiguatingDescription = d['opmerking_titel']
@@ -218,7 +270,7 @@ def parseData(d, thesaurusDict=dict()):
     attributedTo = [{
         'identifier': i['naam_linkref'],
         'name': i['naam_inverted']
-    } for i in d['toeschrijving']]
+    } for i in d['toeschrijving'] if i['status'] == 'huidig']
 
     beginSearchDate = f"{d['zoekmarge_begindatum']}-01-01"
     endSearchDate = f"{d['zoekmarge_einddatum']}-12-31"
@@ -255,26 +307,33 @@ def parseData(d, thesaurusDict=dict()):
     width = QuantitativeValue(
         None,
         unitCode='MTR',
-        value=Literal(float(d['breedte']) / 100, datatype=XSD.float
-                      )) if d['breedte'] and d['breedte'] != "?" else None
+        value=Literal(float(d['breedte'].replace(',', '.').replace(' ', '')) /
+                      100,
+                      datatype=XSD.float)
+    ) if d['breedte'] and d['breedte'] != "?" else None
     height = QuantitativeValue(
         None,
         unitCode='MTR',
-        value=Literal(float(d['hoogte'].replace(',', '.')) / 100,
-                      datatype=XSD.float
-                      )) if d['hoogte'] and d['hoogte'] != "?" else None
-    depth = QuantitativeValue(None,
-                              unitCode='MTR',
-                              value=Literal(float(d['diepte']) / 100,
-                                            datatype=XSD.float)
-                              ) if d['diepte'] and d['diepte'] != "?" else None
+        value=Literal(float(d['hoogte'].replace(',', '.').replace(' ', '')) /
+                      100,
+                      datatype=XSD.float)
+    ) if d['hoogte'] and d['hoogte'] != "?" else None
+    depth = QuantitativeValue(
+        None,
+        unitCode='MTR',
+        value=Literal(float(d['diepte'].replace(',', '.').replace(' ', '')) /
+                      100,
+                      datatype=XSD.float)
+    ) if d['diepte'] and d['diepte'] != "?" else None
 
     externalURIs = []
     for u in d['urls']:
-        externalURIs.append(URIRef(u['URL']))
+        if u.get('URL'):
+            externalURIs.append(URIRef(u['URL']))
 
     if d.get('iconclass_code'):
-        iconclass = nsIconClass.term(d['iconclass_code'])
+        iconclass_encoded = urllib.parse.quote(d['iconclass_code'][0])
+        iconclass = nsIconClass.term(iconclass_encoded)
     else:
         iconclass = None
 
@@ -292,13 +351,17 @@ def parseData(d, thesaurusDict=dict()):
     abouts = []
     for p in d['voorgestelde']:
 
+        # Only take current attribution. Skip if field is absent
+        if p.get('status_identificatie_portret') != "huidig":
+            continue
+
         pURI = Person(nsPerson.term(str(p['persoonsnummer'])))
 
         marriages = []
         for m in p.get('huwelijk', []):
             marriages.append({
                 'marriageDate':
-                m['datum_huwelijk'],
+                m.get('datum_huwelijk'),
                 'marriagePartner':
                 m.get('huwelijks_partner'),
                 'marriagePartnerIdentifier':
@@ -323,7 +386,7 @@ def parseData(d, thesaurusDict=dict()):
             'deathPlace': p.get('sterfplaats'),
             'deathPlaceIdentifier': p.get('sterfplaats_lref'),  # mapping TGN?
             'deathDateBegin': p.get('sterfdatum_begin'),
-            'deathDateBegin': p.get('sterfdatum_begin'),
+            'deathDateEnd': p.get('sterfdatum_eind'),
             'burialDate': p.get('begraafdatum'),
             # 'parents': p['ouders'],
             # 'mother': p['naam_moeder'],
@@ -381,15 +444,20 @@ def parseData(d, thesaurusDict=dict()):
     for p in abouts:
         depicted.append(getPerson(p))
 
-    artists = [
-        Person(URIRef(f"https://data.rkd.nl/artists/{a['identifier']}"))
-        for a in attributedTo
-    ]
+    artists = []
+    for a in attributedTo:
+
+        artistURI = URIRef(f"https://data.rkd.nl/artists/{a['identifier']}")
+        exploreArtistURI = URIRef(
+            f"https://rkd.nl/explore/artists/{a['identifier']}")
+
+        artist = Person(artistURI)
+        artist.sameAs = [exploreArtistURI]
 
     visualArtwork = VisualArtwork(
         URIRef(f"https://rkd.nl/explore/images/{identifier}"),
-        name=[Literal(name_nl, lang='nl')
-              for name_nl in names_nl] + [Literal(name_en, lang='en')],
+        name=[Literal(name_nl, lang='nl') for name_nl in names_nl] +
+        [Literal(name_en, lang='en') for name_en in names_en],
         alternateName=alternateName,
         disambiguatingDescription=disambiguatingDescription,
         description=description,
@@ -410,15 +478,16 @@ def parseData(d, thesaurusDict=dict()):
     if iconclass:
         visualArtwork.subject = [iconclass]
 
-    partOfs = []
+    relatedTos = []
     for r in related:
-        c = CreativeWork()
-        partOfs.append(Role(None, name=r['relation'], isPartOf=c))
-        VisualArtwork(r['relatedTo']).isPartOf = [
-            Role(None, name=r['relation'], isPartOf=c)
-        ]
+        otherWork = VisualArtwork(r['relatedTo'])
+        relatedTos.append(Role(None, name=r['relation'],
+                               isRelatedTo=otherWork))
+        # otherWork.isRelatedTo = [
+        #     Role(None, name=r['relation'], isRelatedTo=visualArtwork)
+        # ]
 
-    visualArtwork.isPartOf = partOfs
+    visualArtwork.isRelatedTo = relatedTos
 
 
 def parseDate(begin, end=None):
@@ -459,9 +528,7 @@ def parseDate(begin, end=None):
 def getPlace(identifier, label=[]):
 
     if identifier:
-        return Place(
-            URIRef(f"https://data.rkd.nl/thesaurus/place/{identifier}"),
-            name=label)
+        return nsThesaurus.term(str(identifier))
     else:
         return None
 
@@ -472,7 +539,7 @@ def getThesaurus(identifier,
                  THESAURUSURL_NL='https://rkd.nl/nl/explore/thesaurus?term=',
                  THESAURUSURL_EN='https://rkd.nl/en/explore/thesaurus?term=',
                  recursionDepth=0,
-                 maxRecursionDepth=3):
+                 maxRecursionDepth=2):
 
     identifier = str(identifier)
     uri = nsThesaurus.term(str(identifier))
@@ -663,6 +730,7 @@ def getPerson(p):
                       hasLatestEndTimeStamp=latestEndTimeStamp)
 
         person.birth = birth
+        events.append(birth)
 
     if p['baptismDateBegin'] or p['baptismDateEnd']:
 
@@ -692,6 +760,7 @@ def getPerson(p):
                       hasLatestEndTimeStamp=latestEndTimeStamp)
 
         person.death = death
+        events.append(death)
 
     if p['burialDate']:
 
@@ -723,10 +792,14 @@ def getPerson(p):
             else:
                 partner = None
 
+            partners = [person]
+            if partner:
+                partners.append(partner)
+
             marriage = Marriage(None,
                                 place=place,
                                 hasTimeStamp=date,
-                                partner=[person, partner])
+                                partner=partners)
 
             events.append(marriage)
 
@@ -735,9 +808,11 @@ def getPerson(p):
     return person
 
 
-def main(identifiers, URL="https://api.rkd.nl/api/record/portraits/"):
+def main(search=None,
+         identifiers=[],
+         URL="https://api.rkd.nl/api/record/portraits/"):
 
-    ns = Namespace("https://data.create.humanities.uva.nl/id/rkdimages/")
+    ns = Namespace("https://data.create.humanities.uva.nl/id/rkd/")
 
     ds = Dataset()
     ds.bind('rdfs', RDFS)
@@ -750,6 +825,13 @@ def main(identifiers, URL="https://api.rkd.nl/api/record/portraits/"):
     ds.bind('owl', OWL)
     ds.bind('dc', dc)
 
+    ds.bind('rkdArtist', URIRef("https://data.rkd.nl/artists/"))
+    ds.bind('rkdThes', nsThesaurus)
+    ds.bind('rkdPerson', nsPerson)
+    ds.bind('rkdImage', URIRef("https://rkd.nl/explore/images/"))
+
+    ds.bind('aat', URIRef("http://vocab.getty.edu/aat/"))
+
     ## First the images
 
     rdfSubject.db = ds.graph(identifier=ns)
@@ -761,6 +843,11 @@ def main(identifiers, URL="https://api.rkd.nl/api/record/portraits/"):
     else:
         thesaurusDict = dict()
 
+    # to fetch all identifiers from the search
+    if search:
+        thesaurusDict = parseURL(search, thesaurusDict=thesaurusDict)
+
+    # or/and individual identifiers
     for i in identifiers:
         thesaurusDict = parseURL(URL + str(i), thesaurusDict=thesaurusDict)
 
@@ -782,4 +869,9 @@ def main(identifiers, URL="https://api.rkd.nl/api/record/portraits/"):
 
 
 if __name__ == "__main__":
-    main([197253, 3063, 147735, 125660])
+    # main(identifiers=[197253, 3063, 147735, 125660, 237150])
+
+    main(
+        search=
+        "https://api.rkd.nl/api/search/portraits?filters[periode]=1475||1825&format=json"
+    )
