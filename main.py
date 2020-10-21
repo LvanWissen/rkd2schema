@@ -304,31 +304,15 @@ def parseData(d, thesaurusDict=dict()):
                                               returnType='uri')
         materials.append(concept)
 
-    width = QuantitativeValue(
-        None,
-        unitCode='MTR',
-        value=Literal(float(d['breedte'].replace(',', '.').replace(' ', '')) /
-                      100,
-                      datatype=XSD.float)
-    ) if d['breedte'] and d['breedte'] != "?" else None
-    height = QuantitativeValue(
-        None,
-        unitCode='MTR',
-        value=Literal(float(d['hoogte'].replace(',', '.').replace(' ', '')) /
-                      100,
-                      datatype=XSD.float)
-    ) if d['hoogte'] and d['hoogte'] != "?" else None
-    depth = QuantitativeValue(
-        None,
-        unitCode='MTR',
-        value=Literal(float(d['diepte'].replace(',', '.').replace(' ', '')) /
-                      100,
-                      datatype=XSD.float)
-    ) if d['diepte'] and d['diepte'] != "?" else None
+    width = getQuantitativeValue(d['breedte'])
+
+    height = getQuantitativeValue(d['hoogte'])
+
+    depth = getQuantitativeValue(d['diepte'])
 
     externalURIs = []
     for u in d['urls']:
-        if u.get('URL'):
+        if u.get('URL') and 'handle' in u['URL']:
             externalURIs.append(URIRef(u['URL']))
 
     if d.get('iconclass_code'):
@@ -523,6 +507,28 @@ def parseDate(begin, end=None):
 
     else:
         return None, None, None
+
+
+def getQuantitativeValue(value):
+
+    if value and value != "?":
+
+        value = value.replace(',',
+                              '.').replace(' ',
+                                           '').replace('c.',
+                                                       '').replace('ca', '')
+
+        try:
+            value = float(value) / 100
+            literal = Literal(value, datatype=XSD.decimal)
+
+            qv = QuantitativeValue(None, unitCode='MTR', value=literal)
+
+            return qv
+
+        except ValueError:
+            print("Incorrect measurement:", value)
+            return None
 
 
 def getPlace(identifier, label=[]):
@@ -809,6 +815,7 @@ def getPerson(p):
 
 
 def main(search=None,
+         cache=None,
          identifiers=[],
          URL="https://api.rkd.nl/api/record/portraits/"):
 
@@ -846,10 +853,13 @@ def main(search=None,
     # to fetch all identifiers from the search
     if search:
         thesaurusDict = parseURL(search, thesaurusDict=thesaurusDict)
-
-    # or/and individual identifiers
-    for i in identifiers:
-        thesaurusDict = parseURL(URL + str(i), thesaurusDict=thesaurusDict)
+    elif cache:
+        # assume that everything in the thesaurus is also cached
+        for doc in cache.values():
+            parseData(doc, thesaurusDict=thesaurusDict)
+    elif identifiers:
+        for i in identifiers:
+            thesaurusDict = parseURL(URL + str(i), thesaurusDict=thesaurusDict)
 
     ## Then the thesaurus
 
@@ -875,3 +885,8 @@ if __name__ == "__main__":
         search=
         "https://api.rkd.nl/api/search/portraits?filters[periode]=1475||1825&format=json"
     )
+
+    # with open('imagecache.json') as infile:
+    #     imageCache = json.load(infile)
+
+    # main(cache=imageCache)
