@@ -497,6 +497,7 @@ def parseData(d, thesaurusDict=dict()):
 
         artist = Person(artistURI)
         artist.sameAs = [exploreArtistURI]
+        artists.append(artist)
 
     visualArtwork = VisualArtwork(
         URIRef(f"https://rkd.nl/explore/images/{identifier}"),
@@ -778,9 +779,9 @@ def getPerson(p):
                     ] if p['disambiguatingDescription'] else [])
 
     if p['gender']:
-        if p['gender'] == 'm':
+        if p['gender'].lower() == 'm':
             person.gender = schema.Male
-        elif p['gender'] == 'f':
+        elif p['gender'].lower() == 'f':
             person.gender = schema.Female
 
     events = []
