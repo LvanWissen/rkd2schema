@@ -391,6 +391,24 @@ def parseData(d, thesaurusDict=dict()):
             'relation':
             r.get('onderdeel_van_verband')
         })
+        
+    for r in d['artistiek']:
+        if r.get('artistiek_verband_koppeling'):
+            relIdentifier = str(r['artistiek_verband_koppeling'][0]['priref'])
+        else:
+            relIdentifier = None
+            
+        related.append({
+            'relatedTo':
+            URIRef(f"https://rkd.nl/explore/images/{relIdentifier}") if relIdentifier else None,
+            'relation':
+            r.get('onderdeel_van_verband'),
+            'description': 
+            ", ".join([r.get('beschrijving_verband', r.get('opmerking_artistiek_verband', "")],
+            'relationThesaurus': 
+            r.get('artistiek_verband_linkref')
+        })
+            
 
     abouts = []
     for p in d['voorgestelde']:
@@ -525,8 +543,24 @@ def parseData(d, thesaurusDict=dict()):
 
     relatedTos = []
     for r in related:
-        otherWork = VisualArtwork(r['relatedTo'])
-        relatedTos.append(Role(None, name=r['relation'],
+        if r['relatedTo']:
+            otherWork = VisualArtwork(r['relatedTo'])
+        else:
+            otherWork = None
+            
+        if r['relationThesaurus']:
+            relationThesaurus, thesaurusDict = getThesaurus(r['relationThesaurus'],
+                                              thesaurusDict,
+                                              returnType='uri')
+        else:
+            relationThesaurus = None
+            
+        if r['description']:
+            description = [r['desscription']]
+        else:
+            description = []                           
+            
+        relatedTos.append(Role(None, name=r['relation'], additionalType=relationThesaurus, description=description,
                                isRelatedTo=otherWork))
         # otherWork.isRelatedTo = [
         #     Role(None, name=r['relation'], isRelatedTo=visualArtwork)
