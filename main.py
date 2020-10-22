@@ -31,6 +31,14 @@ foaf = Namespace("http://xmlns.com/foaf/0.1/")
 void = Namespace("http://rdfs.org/ns/void#")
 nsIconClass = Namespace('http://iconclass.org/')
 
+eventTranslationNL = {
+    'Birth': 'Geboorte',
+    'Baptism': 'Doop',
+    'Death': 'Overlijden',
+    'Burial': 'Begrafenis',
+    'Marriage': 'Huwelijk'
+}
+
 
 class Entity(rdfSubject):
     rdf_type = URIRef('urn:entity')
@@ -195,16 +203,53 @@ def unique(*args):
     return BNode(unique_id)
 
 
-def parseURL(url, params={'format': 'json'}, thesaurusDict=dict()):
+def getEventLabel(event):
+
+    if event.hasTimeStamp:
+        year = str(event.hasTimeStamp)[:4]
+    elif event.hasEarliestBeginTimeStamp and event.hasLatestEndTimeStamp:
+        year = f"ca. {str(event.hasEarliestBeginTimeStamp)[:4]}-{str(event.hasLatestEndTimeStamp)[:4]}"
+    elif event.hasEarliestBeginTimeStamp:
+        year = f"ca. {str(event.hasEarliestBeginTimeStamp)[:4]}-?"
+    elif event.hasLatestEndTimeStamp:
+        year = f"ca. ?-{str(event.hasLatestEndTimeStamp)[:4]}"
+    else:
+        year = "?"
+
+    eventClassName = event.__class__.__name__
+
+    eventNameNL = eventTranslationNL[eventClassName]
+    eventNameEN = eventClassName
+
+    if event.principal:
+        persons = [event.principal.name[0]]
+    elif event.partner:
+        persons = sorted(i.name[0] for i in event.partner)
+    else:
+        persons = []
+
+    if persons:
+        labelNL = Literal(f"{eventNameNL} van {' en '.join(persons)} ({year})",
+                          lang='nl')
+        labelEN = Literal(f"{eventNameEN} of {' and '.join(persons)} ({year})",
+                          lang='en')
+    else:
+        labelNL = Literal(f"{eventNameNL} ({year})", lang='nl')
+        labelEN = Literal(f"{eventNameEN} ({year})", lang='en')
+
+    return [labelNL, labelEN]
+
+
+def parseURL(url,
+             params={'format': 'json'},
+             thesaurusDict=dict(),
+             imageCache=dict()):
 
     r = requests.get(url, params=params).json()
 
-    if r['response']['numFound'] >= 1:
+    if r['response']['numFound'] > 1:
         nTotal = r['response']['numFound']
         start = 0
-
-        with open('imagecache.json') as infile:
-            imageCache = json.load(infile)
 
         while start < nTotal:
             # First retrieve the identifier through a search (one at the time)
@@ -230,16 +275,21 @@ def parseURL(url, params={'format': 'json'}, thesaurusDict=dict()):
             parseData(doc, thesaurusDict=thesaurusDict)
             start += 1
 
-            # save every 250 requests
-            if start % 250 == 0 or start == nTotal - 1:
+            # save every 1000 requests
+            if start % 1000 == 0:
                 with open('imagecache.json', 'w') as outfile:
                     json.dump(imageCache, outfile)
 
     else:
         doc = r['response']['docs'][0]
+
+        identifier = str(doc['priref'])
+        if identifier not in imageCache:
+            imageCache[identifier] = doc
+
         parseData(doc, thesaurusDict=thesaurusDict)
 
-    return thesaurusDict
+    return thesaurusDict, imageCache
 
 
 def parseData(d, thesaurusDict=dict()):
@@ -280,7 +330,8 @@ def parseData(d, thesaurusDict=dict()):
     attributedTo = [{
         'identifier': i['naam_linkref'],
         'name': i['naam_inverted']
-    } for i in d['toeschrijving'] if i['status'] == 'huidig']
+    } for i in d['toeschrijving']
+                    if i['status'] == 'huidig' and i.get('naam_linkref')]
 
     beginSearchDate = f"{d['zoekmarge_begindatum']}-01-01"
     endSearchDate = f"{d['zoekmarge_einddatum']}-12-31"
@@ -341,9 +392,6 @@ def parseData(d, thesaurusDict=dict()):
             r.get('onderdeel_van_verband')
         })
 
-        # fetch image info
-        parseURL(APIURL + relIdentifier, thesaurusDict=thesaurusDict)
-
     abouts = []
     for p in d['voorgestelde']:
 
@@ -386,9 +434,6 @@ def parseData(d, thesaurusDict=dict()):
             'deathDateBegin': p.get('sterfdatum_begin'),
             'deathDateEnd': p.get('sterfdatum_eind'),
             'burialDate': p.get('begraafdatum'),
-            # 'parents': p['ouders'],
-            # 'mother': p['naam_moeder'],
-            # 'father': p['naam_vader'],
             'marriages': marriages
         }
         abouts.append(personData)
@@ -536,7 +581,12 @@ def getQuantitativeValue(value):
             value = float(value) / 100
             literal = Literal(value, datatype=XSD.decimal)
 
-            qv = QuantitativeValue(None, unitCode='MTR', value=literal)
+            label = [f"{value} meter"]
+
+            qv = QuantitativeValue(None,
+                                   unitCode='MTR',
+                                   value=literal,
+                                   label=label)
 
             return qv
 
@@ -559,7 +609,7 @@ def getThesaurus(identifier,
                  THESAURUSURL_NL='https://rkd.nl/nl/explore/thesaurus?term=',
                  THESAURUSURL_EN='https://rkd.nl/en/explore/thesaurus?term=',
                  recursionDepth=0,
-                 maxRecursionDepth=5):
+                 maxRecursionDepth=2):
 
     identifier = str(identifier)
     uri = nsThesaurus.term(str(identifier))
@@ -838,6 +888,9 @@ def getPerson(p):
     person.event = events
     person.spouse = spouses
 
+    for e in events:
+        e.label = getEventLabel(e)
+
     return person
 
 
@@ -866,29 +919,60 @@ def main(search=None, cache=None, identifiers=[]):
 
     ## First the images
 
-    rdfSubject.db = ds.graph(identifier=ns)
+    g = rdfSubject.db = ds.graph(identifier=ns)
 
-    # Load cache
+    # Load cache thesaurus
     if os.path.isfile('rkdthesaurus.json'):
         with open('rkdthesaurus.json') as infile:
             thesaurusDict = json.load(infile)
     else:
         thesaurusDict = dict()
 
+    # Load cache images
+    if os.path.isfile('imagecache.json'):
+        with open('imagecache.json') as infile:
+            imageCache = json.load(infile)
+    else:
+        imageCache = dict()
+
     # to fetch all identifiers from the search
     if search:
-        thesaurusDict = parseURL(search, thesaurusDict=thesaurusDict)
+        thesaurusDict, imageCache = parseURL(search,
+                                             thesaurusDict=thesaurusDict,
+                                             imageCache=imageCache)
     elif cache:
         # assume that everything in the thesaurus is also cached
         for doc in cache.values():
             parseData(doc, thesaurusDict=thesaurusDict)
     elif identifiers:
         for i in identifiers:
-            thesaurusDict = parseURL(APIURL + str(i),
-                                     thesaurusDict=thesaurusDict)
+            thesaurusDict, imageCache = parseURL(APIURL + str(i),
+                                                 thesaurusDict=thesaurusDict,
+                                                 imageCache=imageCache)
+
+    # Any images without labels?
+    # These were not included in the search, but fetch them anyway.
+    print("Finding referred images that were not included")
+    q = """
+    PREFIX schema: <http://schema.org/>
+    SELECT ?uri WHERE {
+        ?role a schema:Role ; schema:isRelatedTo ?uri .
+
+        FILTER NOT EXISTS { ?uri schema:name ?name }
+    }
+    """
+    images = g.query(q)
+    print(f"Found {len(images)}!")
+    for i in images:
+        identifier = str(i['uri']).replace('https://rkd.nl/explore/images/',
+                                           '')
+        thesaurusDict, imageCache = parseURL(
+            "https://api.rkd.nl/api/record/images/" + str(identifier),
+            thesaurusDict=thesaurusDict,
+            imageCache=imageCache)
 
     ## Then the thesaurus
-
+    print("Converting the thesaurus")
     rdfSubject.db = ds.graph(identifier=ns.term('thesaurus/'))
 
     ids = list(thesaurusDict.keys())
@@ -899,9 +983,12 @@ def main(search=None, cache=None, identifiers=[]):
     with open('rkdthesaurus.json', 'w') as outfile:
         json.dump(thesaurusDict, outfile)
 
+    with open('imagecache.json', 'w') as outfile:
+        json.dump(imageCache, outfile)
+
     ## Serialize
     print("Serializing!")
-    ds.serialize('rkdimages.trig', format='trig')
+    ds.serialize('rkdportraits14751825.trig', format='trig')
 
 
 if __name__ == "__main__":
