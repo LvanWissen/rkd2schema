@@ -8,14 +8,16 @@ pip install git+https://github.com/LvanWissen/RDFAlchemy.git
 import os
 import json
 import calendar
-from rdflib.term import BNode
 import urllib.parse
+import uuid
 
 import requests
 from bs4 import BeautifulSoup
 
-from rdflib import Dataset, Namespace, URIRef, Literal, OWL, RDFS, XSD, SKOS
+from rdflib import Dataset, Namespace, URIRef, Literal, BNode, OWL, RDFS, XSD, SKOS
 from rdfalchemy import rdfSubject, rdfMultiple, rdfSingle
+
+APIURL = "https://api.rkd.nl/api/record/portraits/"
 
 nsPerson = Namespace("https://data.create.humanities.uva.nl/id/rkd/persons/")
 nsThesaurus = Namespace(
@@ -137,6 +139,7 @@ class Person(Entity):
     death = rdfSingle(bio.death)
     event = rdfMultiple(bio.event)
 
+    spouse = rdfMultiple(schema.spouse)
     parent = rdfMultiple(schema.parent)
     children = rdfMultiple(schema.children)
 
@@ -183,10 +186,16 @@ class Concept(Entity):
     narrower = rdfMultiple(SKOS.narrower)
 
 
-def parseURL(url,
-             params={'format': 'json'},
-             thesaurusDict=dict(),
-             URL="https://api.rkd.nl/api/record/portraits/"):
+def unique(*args):
+
+    identifier = "".join(str(i) for i in args)  # order matters
+
+    unique_id = uuid.uuid5(uuid.NAMESPACE_X500, identifier)
+
+    return BNode(unique_id)
+
+
+def parseURL(url, params={'format': 'json'}, thesaurusDict=dict()):
 
     r = requests.get(url, params=params).json()
 
@@ -211,9 +220,10 @@ def parseURL(url,
             doc = imageCache.get(identifier)
 
             if doc is None:
-                r = requests.get(URL + identifier, params={
-                    'format': 'json'
-                }).json()
+                r = requests.get(APIURL + identifier,
+                                 params={
+                                     'format': 'json'
+                                 }).json()
                 doc = r['response']['docs'][0]
                 imageCache[identifier] = doc
 
@@ -323,14 +333,16 @@ def parseData(d, thesaurusDict=dict()):
 
     related = []
     for r in d['onderdeel_van']:
+        relIdentifier = str(r['object_onderdeel_van'][0]['priref'])
         related.append({
             'relatedTo':
-            URIRef(
-                f"https://rkd.nl/explore/images/{r['object_onderdeel_van'][0]['priref']}"
-            ),
+            URIRef(f"https://rkd.nl/explore/images/{relIdentifier}"),
             'relation':
             r.get('onderdeel_van_verband')
         })
+
+        # fetch image info
+        parseURL(APIURL + relIdentifier, thesaurusDict=thesaurusDict)
 
     abouts = []
     for p in d['voorgestelde']:
@@ -350,6 +362,8 @@ def parseData(d, thesaurusDict=dict()):
                 m.get('huwelijks_partner'),
                 'marriagePartnerIdentifier':
                 m.get('huwelijks_partner_nummer_lref'),
+                'marriagePartnerNameWithIdentifier':
+                m.get('naam_huw_partner_samenvoeging'),
                 'marriagePlace':
                 m.get('huwelijk_plaats'),
                 'marriagePlaceIdentifier':
@@ -391,7 +405,9 @@ def parseData(d, thesaurusDict=dict()):
                             children=[pURI])
             parents.append(father)
         elif p.get('naam_vader'):
-            father = Person(None, name=[p['naam_vader']], children=[pURI])
+            father = Person(unique(p['persoonsnummer'], p['naam_vader']),
+                            name=[p['naam_vader']],
+                            children=[pURI])
             parents.append(father)
 
         # mother
@@ -404,7 +420,9 @@ def parseData(d, thesaurusDict=dict()):
                             children=[pURI])
             parents.append(mother)
         elif p.get('naam_moeder'):
-            mother = Person(None, name=[p['naam_moeder']], children=[pURI])
+            mother = Person(unique(p['persoonsnummer'], p['naam_moeder']),
+                            name=[p['naam_moeder']],
+                            children=[pURI])
             parents.append(mother)
 
         # children
@@ -417,9 +435,6 @@ def parseData(d, thesaurusDict=dict()):
                                name=[childName],
                                parent=[pURI])
                 children.append(child)
-
-        # parents
-        #???
 
         pURI.parent = parents
         pURI.children = children
@@ -514,9 +529,8 @@ def getQuantitativeValue(value):
     if value and value != "?":
 
         value = value.replace(',',
-                              '.').replace(' ',
-                                           '').replace('c.',
-                                                       '').replace('ca', '')
+                              '.').replace(' ', '').replace('c.', '').replace(
+                                  'ca', '').replace('cm', '')
 
         try:
             value = float(value) / 100
@@ -545,7 +559,7 @@ def getThesaurus(identifier,
                  THESAURUSURL_NL='https://rkd.nl/nl/explore/thesaurus?term=',
                  THESAURUSURL_EN='https://rkd.nl/en/explore/thesaurus?term=',
                  recursionDepth=0,
-                 maxRecursionDepth=2):
+                 maxRecursionDepth=5):
 
     identifier = str(identifier)
     uri = nsThesaurus.term(str(identifier))
@@ -728,7 +742,7 @@ def getPerson(p):
         timeStamp, earliestBeginTimeStamp, latestEndTimeStamp = parseDate(
             p['birthDateBegin'], p['birthDateEnd'])
 
-        birth = Birth(None,
+        birth = Birth(nsPerson.term(str(p['identifier'] + '#birth')),
                       principal=person,
                       place=place,
                       hasTimeStamp=timeStamp,
@@ -743,7 +757,7 @@ def getPerson(p):
         timeStamp, earliestBeginTimeStamp, latestEndTimeStamp = parseDate(
             p['baptismDateBegin'], p['baptismDateEnd'])
 
-        baptism = Baptism(None,
+        baptism = Baptism(nsPerson.term(str(p['identifier'] + '#baptism')),
                           principal=person,
                           hasTimeStamp=timeStamp,
                           hasEarliestBeginTimeStamp=earliestBeginTimeStamp,
@@ -758,7 +772,7 @@ def getPerson(p):
         timeStamp, earliestBeginTimeStamp, latestEndTimeStamp = parseDate(
             p['deathDateBegin'], p.get('deathDateEnd'))
 
-        death = Death(None,
+        death = Death(nsPerson.term(str(p['identifier'] + '#death')),
                       principal=person,
                       place=place,
                       hasTimeStamp=timeStamp,
@@ -772,10 +786,13 @@ def getPerson(p):
 
         date = Literal(p['burialDate'], datatype=XSD.date)
 
-        burial = Burial(None, principal=person, hasTimeStamp=date)
+        burial = Burial(nsPerson.term(str(p['identifier'] + '#burial')),
+                        principal=person,
+                        hasTimeStamp=date)
 
         events.append(burial)
 
+    spouses = []
     for m in p['marriages']:
         if m.get('marriagePlace') or m.get('marriageDate') or m.get(
                 'marriagePartner') or m.get('marriagePartnerIdentifier'):
@@ -789,35 +806,42 @@ def getPerson(p):
                 date = None
 
             if m['marriagePartnerIdentifier']:
-                partner = Person(
-                    URIRef(
-                        f"https://data.rkd.nl/artists/{m['marriagePartnerIdentifier']}"
-                    ))
+                if m['marriagePartnerNameWithIdentifier']:
+                    name = [m['marriagePartnerNameWithIdentifier']]
+                else:
+                    name = []
+                partner = Person(nsPerson.term(
+                    str(m['marriagePartnerIdentifier'])),
+                                 name=name)
             elif m['marriagePartner']:
-                partner = Person(None, name=[m['marriagePartner']])
+                partner = Person(unique(p['identifier'], m['marriagePartner']),
+                                 name=[m['marriagePartner']])
             else:
                 partner = None
 
             partners = [person]
             if partner:
                 partners.append(partner)
+                spouses.append(partner)
+                partner.spouse = [person]
 
-            marriage = Marriage(None,
+            marriage = Marriage(unique(
+                set([p['identifier'], m['marriagePartner'], 'marriage'])),
                                 place=place,
                                 hasTimeStamp=date,
                                 partner=partners)
+            if partner:
+                partner.event = [marriage]
 
             events.append(marriage)
 
     person.event = events
+    person.spouse = spouses
 
     return person
 
 
-def main(search=None,
-         cache=None,
-         identifiers=[],
-         URL="https://api.rkd.nl/api/record/portraits/"):
+def main(search=None, cache=None, identifiers=[]):
 
     ns = Namespace("https://data.create.humanities.uva.nl/id/rkd/")
 
@@ -836,6 +860,7 @@ def main(search=None,
     ds.bind('rkdThes', nsThesaurus)
     ds.bind('rkdPerson', nsPerson)
     ds.bind('rkdImage', URIRef("https://rkd.nl/explore/images/"))
+    ds.bind('rkdThumb', URIRef("https://images.rkd.nl/rkd/thumb/650x650/"))
 
     ds.bind('aat', URIRef("http://vocab.getty.edu/aat/"))
 
@@ -859,7 +884,8 @@ def main(search=None,
             parseData(doc, thesaurusDict=thesaurusDict)
     elif identifiers:
         for i in identifiers:
-            thesaurusDict = parseURL(URL + str(i), thesaurusDict=thesaurusDict)
+            thesaurusDict = parseURL(APIURL + str(i),
+                                     thesaurusDict=thesaurusDict)
 
     ## Then the thesaurus
 
@@ -881,12 +907,12 @@ def main(search=None,
 if __name__ == "__main__":
     # main(identifiers=[197253, 3063, 147735, 125660, 237150])
 
-    main(
-        search=
-        "https://api.rkd.nl/api/search/portraits?filters[periode]=1475||1825&format=json"
-    )
+    # main(
+    #     search=
+    #     "https://api.rkd.nl/api/search/portraits?filters[periode]=1475||1825&format=json"
+    # )
 
-    # with open('imagecache.json') as infile:
-    #     imageCache = json.load(infile)
+    with open('imagecache.json') as infile:
+        imageCache = json.load(infile)
 
-    # main(cache=imageCache)
+    main(cache=imageCache)
