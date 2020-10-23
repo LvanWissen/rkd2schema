@@ -422,8 +422,12 @@ def parseData(d, thesaurusDict=dict()):
     abouts = []
     for p in d['voorgestelde']:
 
-        # Only take current attribution. Skip if field is absent
         if p.get('status_identificatie_portret') != "huidig":
+            verworpen = True
+        else:
+            verworpen = False
+
+        if p.get('persoonsnummer') is None:
             continue
 
         pURI = Person(nsPerson.term(str(p['persoonsnummer'])))
@@ -513,7 +517,12 @@ def parseData(d, thesaurusDict=dict()):
 
     depicted = []
     for p in abouts:
-        depicted.append(getPerson(p))
+        depictedPerson = getPerson(p)
+
+        if verworpen:
+            continue
+        else:
+            depicted.append(depictedPerson)
 
     artists = []
     for a in attributedTo:
