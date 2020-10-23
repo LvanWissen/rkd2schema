@@ -43,6 +43,8 @@ eventTranslationNL = {
 class Entity(rdfSubject):
     rdf_type = URIRef('urn:entity')
 
+    additionalType = rdfSingle(schema.additionalType)
+
     label = rdfMultiple(RDFS.label)
     name = rdfMultiple(schema.name)
     alternateName = rdfMultiple(schema.alternateName)
@@ -374,6 +376,8 @@ def parseData(d, thesaurusDict=dict()):
     externalURIs = []
     for u in d['urls']:
         if u.get('URL') and 'handle' in u['URL']:
+            if ' ' in u['URL']:
+                u['URL'] = u['URL'].split(' ')[0]
             externalURIs.append(URIRef(u['URL']))
 
     if d.get('iconclass_code'):
@@ -391,24 +395,29 @@ def parseData(d, thesaurusDict=dict()):
             'relation':
             r.get('onderdeel_van_verband')
         })
-        
+
     for r in d['artistiek']:
         if r.get('artistiek_verband_koppeling'):
             relIdentifier = str(r['artistiek_verband_koppeling'][0]['priref'])
         else:
             relIdentifier = None
-            
+
         related.append({
             'relatedTo':
-            URIRef(f"https://rkd.nl/explore/images/{relIdentifier}") if relIdentifier else None,
+            URIRef(f"https://rkd.nl/explore/images/{relIdentifier}")
+            if relIdentifier else None,
             'relation':
             r.get('onderdeel_van_verband'),
-            'description': 
-            ", ".join([r.get('beschrijving_verband', r.get('opmerking_artistiek_verband', "")],
-            'relationThesaurus': 
+            'description':
+            ", ".join([
+                i for i in [
+                    r.get('beschrijving_verband'),
+                    r.get('opmerking_artistiek_verband')
+                ] if i
+            ]),
+            'relationThesaurus':
             r.get('artistiek_verband_linkref')
         })
-            
 
     abouts = []
     for p in d['voorgestelde']:
@@ -547,21 +556,24 @@ def parseData(d, thesaurusDict=dict()):
             otherWork = VisualArtwork(r['relatedTo'])
         else:
             otherWork = None
-            
-        if r['relationThesaurus']:
-            relationThesaurus, thesaurusDict = getThesaurus(r['relationThesaurus'],
-                                              thesaurusDict,
-                                              returnType='uri')
+
+        if r.get('relationThesaurus'):
+            relationThesaurus, thesaurusDict = getThesaurus(
+                r['relationThesaurus'], thesaurusDict, returnType='uri')
         else:
             relationThesaurus = None
-            
-        if r['description']:
-            description = [r['desscription']]
+
+        if r.get('description'):
+            description = [r['description']]
         else:
-            description = []                           
-            
-        relatedTos.append(Role(None, name=r['relation'], additionalType=relationThesaurus, description=description,
-                               isRelatedTo=otherWork))
+            description = []
+
+        relatedTos.append(
+            Role(None,
+                 name=r['relation'],
+                 additionalType=relationThesaurus,
+                 description=description,
+                 isRelatedTo=otherWork))
         # otherWork.isRelatedTo = [
         #     Role(None, name=r['relation'], isRelatedTo=visualArtwork)
         # ]
