@@ -333,7 +333,7 @@ def parseData(d, thesaurusDict=dict()):
         'identifier': i['naam_linkref'],
         'name': i['naam_inverted']
     } for i in d['toeschrijving']
-                    if i['status'] == 'huidig' and i.get('naam_linkref')]
+                    if i.get('status') == 'huidig' and i.get('naam_linkref')]
 
     beginSearchDate = f"{d['zoekmarge_begindatum']}-01-01"
     endSearchDate = f"{d['zoekmarge_einddatum']}-12-31"
