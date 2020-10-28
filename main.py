@@ -210,7 +210,11 @@ def getEventLabel(event):
     if event.hasTimeStamp:
         year = str(event.hasTimeStamp)[:4]
     elif event.hasEarliestBeginTimeStamp and event.hasLatestEndTimeStamp:
-        year = f"ca. {str(event.hasEarliestBeginTimeStamp)[:4]}-{str(event.hasLatestEndTimeStamp)[:4]}"
+        if str(event.hasEarliestBeginTimeStamp)[:4] == str(
+                event.hasLatestEndTimeStamp)[:4]:
+            year = str(event.hasEarliestBeginTimeStamp)[:4]
+        else:
+            year = f"ca. {str(event.hasEarliestBeginTimeStamp)[:4]}-{str(event.hasLatestEndTimeStamp)[:4]}"
     elif event.hasEarliestBeginTimeStamp:
         year = f"ca. {str(event.hasEarliestBeginTimeStamp)[:4]}-?"
     elif event.hasLatestEndTimeStamp:
