@@ -76,6 +76,8 @@ class Role(Entity):
     isPartOf = rdfSingle(schema.isPartOf)
     isRelatedTo = rdfSingle(schema.isRelatedTo)
 
+    age = rdfSingle(foaf.age)
+
 
 class CreativeWork(Entity):
     rdf_type = schema.CreativeWork
@@ -83,7 +85,7 @@ class CreativeWork(Entity):
     publication = rdfSingle(schema.publication)
     author = rdfMultiple(schema.author)
 
-    text = rdfSingle(schema.text)
+    text = rdfMultiple(schema.text)
 
     mainEntity = rdfSingle(schema.mainEntity)
 
@@ -424,12 +426,15 @@ def parseData(d, thesaurusDict=dict()):
         })
 
     abouts = []
+    aetatis = []
     for p in d['voorgestelde']:
 
         if p.get('status_identificatie_portret') != "huidig":
             verworpen = True
         else:
             verworpen = False
+
+        zekerheid = p.get('zekerheid_identificatie_portret')
 
         if p.get('persoonsnummer') is None:
             continue
@@ -458,6 +463,7 @@ def parseData(d, thesaurusDict=dict()):
             'name': p['naam_display'],
             'disambiguatingDescription': p.get('functie'),
             'gender': p.get('geslacht'),
+            'age': p.get('aetatis_jaren'),
             'birthPlace': p.get('geboorteplaats'),
             'birthPlaceIdentifier': p.get('geboorteplaats_lref'),
             'birthDateBegin': p.get('geboortedatum_begin'),
@@ -472,6 +478,17 @@ def parseData(d, thesaurusDict=dict()):
             'marriages': marriages
         }
         abouts.append(personData)
+
+        aetatisSet = set(a['age'] for a in abouts if a['age'] is not None)
+        if len(aetatisSet) == 1:
+            aetatis = [Literal(str(list(aetatisSet)[0]))]
+        elif len(aetatisSet) > 1:
+            print(
+                f"Multiple aetatis values for image {identifier}: {aetatisSet}"
+            )
+            aetatis = [
+                Literal(str(a['age'])) for a in abouts if a['age'] is not None
+            ]
 
         parents = []
 
@@ -519,14 +536,36 @@ def parseData(d, thesaurusDict=dict()):
         pURI.parent = parents
         pURI.children = children
 
-    depicted = []
+    depictedRoles = []
+    # depicted = []
     for p in abouts:
         depictedPerson = getPerson(p)
 
         if verworpen:
             continue
         else:
-            depicted.append(depictedPerson)
+            # depicted.append(depictedPerson)
+
+            # 'mogelijk' bij huidige toeschrijving
+            if zekerheid:
+                zekerheidLiteral = [Literal(zekerheid, lang='nl')]
+            else:
+                zekerheidLiteral = []
+
+            # aetatis van persoon, of van de eerdere toegeschrevene (en nu verworpen toeschrijving)
+            if p.get('age'):
+                age = p.get('age')
+            elif len(aetatis) == 1:
+                age = aetatis[0]
+            else:
+                age = None
+
+            role = Role(None,
+                        description=zekerheidLiteral,
+                        age=age,
+                        about=[depictedPerson])
+
+            depictedRoles.append(role)
 
     artists = []
     for a in attributedTo:
@@ -546,7 +585,8 @@ def parseData(d, thesaurusDict=dict()):
         alternateName=alternateName,
         disambiguatingDescription=disambiguatingDescription,
         description=description,
-        about=depicted,
+        text=aetatis,
+        about=depictedRoles,
         keywords=keywords,
         artist=artists,
         artworkSurface=artsurfaces,
