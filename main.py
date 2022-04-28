@@ -18,8 +18,6 @@ from bs4 import BeautifulSoup
 from rdflib import Dataset, Namespace, URIRef, Literal, BNode, OWL, RDFS, XSD, SKOS
 from rdfalchemy import rdfSubject, rdfMultiple, rdfSingle
 
-APIURL = "https://api.rkd.nl/api/record/portraits/"
-
 nsPerson = Namespace("https://data.create.humanities.uva.nl/id/rkd/persons/")
 nsThesaurus = Namespace("https://data.create.humanities.uva.nl/id/rkd/thesaurus/")
 
@@ -252,7 +250,9 @@ def getEventLabel(event):
     return [labelNL, labelEN]
 
 
-def parseURL(url, params={"format": "json"}, thesaurusDict=dict(), imageCache=dict()):
+def parseURL(
+    url, APIURL, params={"format": "json"}, thesaurusDict=dict(), imageCache=dict()
+):
 
     r = requests.get(url, params=params).json()
 
@@ -1035,7 +1035,12 @@ def getPerson(p):
     return person
 
 
-def main(search=None, cache=None, identifiers=[]):
+def main(
+    search=None,
+    cache=None,
+    identifiers=[],
+    APIURL="https://api.rkd.nl/api/record/portraits/",
+):
 
     ns = Namespace("https://data.create.humanities.uva.nl/id/rkd/")
 
@@ -1079,7 +1084,7 @@ def main(search=None, cache=None, identifiers=[]):
     # to fetch all identifiers from the search
     if search:
         thesaurusDict, imageCache = parseURL(
-            search, thesaurusDict=thesaurusDict, imageCache=imageCache
+            search, APIURL, thesaurusDict=thesaurusDict, imageCache=imageCache
         )
     elif cache:
         # assume that everything in the thesaurus is also cached
@@ -1088,32 +1093,44 @@ def main(search=None, cache=None, identifiers=[]):
     elif identifiers:
         for i in identifiers:
             thesaurusDict, imageCache = parseURL(
-                APIURL + str(i), thesaurusDict=thesaurusDict, imageCache=imageCache
+                APIURL + str(i),
+                APIURL,
+                thesaurusDict=thesaurusDict,
+                imageCache=imageCache,
             )
 
     # Any images without labels?
     # These were not included in the search, but fetch them anyway.
-    print("Finding referred images that were not included")
-    q = """
-    PREFIX schema: <http://schema.org/>
-    SELECT ?uri WHERE {
-        ?role a schema:Role ; schema:isRelatedTo ?uri .
+    nImages = 99
+    errors = set()
+    while nImages > len(errors):  # since there is one error?
+        print("Finding referred images that were not included")
+        q = """
+        PREFIX schema: <http://schema.org/>
+        SELECT ?uri WHERE {
+            ?role a schema:Role ; schema:isRelatedTo ?uri .
 
-        FILTER NOT EXISTS { ?uri schema:name ?name }
-    }
-    """
-    images = g.query(q)
-    nImages = len(images)
-    print(f"Found {nImages}!")
-    for n, i in enumerate(images, 1):
-        print(f"Fetching {n}/{len(nImages)}")
+            FILTER NOT EXISTS { ?uri schema:name ?name }
+        }
+        """
+        images = g.query(q)
+        nImages = len(images)
+        print(f"Found {nImages}!")
+        for n, i in enumerate(images, 1):
+            print(f"Fetching {n}/{nImages}")
 
-        identifier = str(i["uri"]).replace("https://rkd.nl/explore/images/", "")
-        thesaurusDict, imageCache = parseURL(
-            "https://api.rkd.nl/api/record/images/" + str(identifier),
-            thesaurusDict=thesaurusDict,
-            imageCache=imageCache,
-        )
+            identifier = str(i["uri"]).replace("https://rkd.nl/explore/images/", "")
+
+            try:
+                thesaurusDict, imageCache = parseURL(
+                    "https://api.rkd.nl/api/record/images/" + str(identifier),
+                    APIURL,
+                    thesaurusDict=thesaurusDict,
+                    imageCache=imageCache,
+                )
+            except:
+                print(f"Failed to fetch {i['uri']}")
+                errors.add(i["uri"])
 
     ## Then the thesaurus
     print("Converting the thesaurus")
@@ -1138,11 +1155,23 @@ def main(search=None, cache=None, identifiers=[]):
 if __name__ == "__main__":
     # main(identifiers=[197253, 3063, 147735, 125660, 237150])
 
-    main(
-        search="https://api.rkd.nl/api/search/portraits?filters[periode]=1400||1850&format=json"
-    )
+    # With this query, we get all RKD Portrait entries between 1400-1850
+    # main(
+    #     search="https://api.rkd.nl/api/search/portraits?filters[periode]=1400||1850&format=json",
+    #     APIURL="https://api.rkd.nl/api/record/portraits/",
+    # )
 
-    # with open('imagecache.json') as infile:
-    #     imageCache = json.load(infile)
+    # But, not all portraits are in the portrait collection. So let's search in the general collection for 'portret'.
+    # Duplicates that are in the portrait collection are already cached with the previous api search.
+    # main(
+    #     search="https://api.rkd.nl/api/search/images?query=portret&filters[periode]=1400||1850&format=json",
+    #     APIURL="https://api.rkd.nl/api/record/images/",
+    # )
 
-    # main(cache=imageCache)
+    # The above two steps gather all (1) portraits from the portrait collection, and (2) portraits from the general collection.
+    # Now, go over our local dump and combine everything into a single RDF-file. This is the final step.
+    # Any related images that is not yet harvested is harvested in this step and added to the file.
+    with open("imagecache.json") as infile:
+        imageCache = json.load(infile)
+
+    main(cache=imageCache)
