@@ -546,7 +546,7 @@ def parseData(d, thesaurusDict=dict()):
 
     depictedRoles = []
     # depicted = []
-    for p in abouts:
+    for n, p in enumerate(abouts, 1):
         depictedPerson = getPerson(p)
 
         if verworpen:
@@ -569,7 +569,12 @@ def parseData(d, thesaurusDict=dict()):
                 age = None
 
             role = Role(
-                None, description=zekerheidLiteral, age=age, about=[depictedPerson]
+                URIRef(
+                    f"https://rkd.nl/explore/images/{identifier}#depicted{str(n).zfill(2)}"
+                ),
+                description=zekerheidLiteral,
+                age=age,
+                about=[depictedPerson],
             )
 
             depictedRoles.append(role)
@@ -612,7 +617,7 @@ def parseData(d, thesaurusDict=dict()):
         visualArtwork.subject = [iconclass]
 
     relatedTos = []
-    for r in related:
+    for n, r in enumerate(related, 1):
         if r["relatedTo"]:
             otherWork = VisualArtwork(r["relatedTo"])
         else:
@@ -632,7 +637,9 @@ def parseData(d, thesaurusDict=dict()):
 
         relatedTos.append(
             Role(
-                None,
+                URIRef(
+                    f"https://rkd.nl/explore/images/{identifier}#related{str(n).zfill(2)}"
+                ),
                 name=r["relation"],
                 additionalType=relationThesaurus,
                 description=description,
